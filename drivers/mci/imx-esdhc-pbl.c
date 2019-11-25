@@ -63,23 +63,28 @@ static void __udelay(int us)
 static u32 esdhc_xfertyp(struct mci_cmd *cmd, struct mci_data *data)
 {
 	u32 xfertyp = 0;
+	u32 command = 0;
 
-	if (data)
-		xfertyp |= COMMAND_DPSEL | TRANSFER_MODE_MSBSEL |
-			TRANSFER_MODE_BCEN |TRANSFER_MODE_DTDSEL;
+	if (data) {
+		command |= SDHCI_DATA_PRESENT;
+		xfertyp |= SDHCI_MULTIPLE_BLOCKS | SDHCI_BLOCK_COUNT_EN |
+			   SDHCI_DATA_TO_HOST;
+	}
 
 	if (cmd->resp_type & MMC_RSP_CRC)
-		xfertyp |= COMMAND_CCCEN;
+		command |= SDHCI_CMD_CRC_CHECK_EN;
 	if (cmd->resp_type & MMC_RSP_OPCODE)
-		xfertyp |= COMMAND_CICEN;
+		xfertyp |= SDHCI_CMD_INDEX_CHECK_EN;
 	if (cmd->resp_type & MMC_RSP_136)
-		xfertyp |= COMMAND_RSPTYP_136;
+		command |= SDHCI_RESP_TYPE_136;
 	else if (cmd->resp_type & MMC_RSP_BUSY)
-		xfertyp |= COMMAND_RSPTYP_48_BUSY;
+		command |= SDHCI_RESP_TYPE_48_BUSY;
 	else if (cmd->resp_type & MMC_RSP_PRESENT)
-		xfertyp |= COMMAND_RSPTYP_48;
+		command |= SDHCI_RESP_TYPE_48;
 
-	return COMMAND_CMD(cmd->cmdidx) | xfertyp;
+	command |= SDHCI_CMD_INDEX(cmd->cmdidx);
+
+	return command << 16 | xfertyp;
 }
 
 static int esdhc_do_data(struct esdhc *esdhc, struct mci_data *data)
@@ -100,7 +105,7 @@ static int esdhc_do_data(struct esdhc *esdhc, struct mci_data *data)
 		int timeout = 1000000;
 
 		while (1) {
-			present = esdhc_read32(esdhc, SDHCI_PRESENT_STATE) & PRSSTAT_BREN;
+			present = esdhc_read32(esdhc, SDHCI_PRESENT_STATE) & SDHCI_BUFFER_READ_ENABLE;
 			if (present)
 				break;
 			if (!--timeout) {
@@ -162,7 +167,7 @@ esdhc_send_cmd(struct esdhc *esdhc, struct mci_cmd *cmd, struct mci_data *data)
 
 	/* Wait for the command to complete */
 	timeout = 10000;
-	while (!(esdhc_read32(esdhc, SDHCI_INT_STATUS) & IRQSTAT_CC)) {
+	while (!(esdhc_read32(esdhc, SDHCI_INT_STATUS) & SDHCI_INT_CMD_COMPLETE)) {
 		__udelay(1);
 		if (!timeout--)
 			return -ETIMEDOUT;
@@ -174,7 +179,7 @@ esdhc_send_cmd(struct esdhc *esdhc, struct mci_cmd *cmd, struct mci_data *data)
 	if (irqstat & CMD_ERR)
 		return -EIO;
 
-	if (irqstat & IRQSTAT_CTOE)
+	if (irqstat & SDHCI_INT_TIMEOUT)
 		return -ETIMEDOUT;
 
 	/* Copy the response to the response buffer */
@@ -191,8 +196,8 @@ esdhc_send_cmd(struct esdhc *esdhc, struct mci_cmd *cmd, struct mci_data *data)
 
 	/* Wait for the bus to be idle */
 	timeout = 10000;
-	while (esdhc_read32(esdhc, SDHCI_PRESENT_STATE) &
-			(PRSSTAT_CICHB | PRSSTAT_CIDHB | PRSSTAT_DLA)) {
+	while (esdhc_read32(esdhc, SDHCI_PRESENT_STATE) & (SDHCI_CMD_INHIBIT_CMD |
+			SDHCI_CMD_INHIBIT_DATA | SDHCI_DATA_LINE_ACTIVE)) {
 		__udelay(1);
 		if (!timeout--)
 			return -ETIMEDOUT;
@@ -209,10 +214,10 @@ static int esdhc_read_blocks(struct esdhc *esdhc, void *dst, size_t len)
 	int ret;
 
 	esdhc_write32(esdhc, SDHCI_INT_ENABLE,
-		      IRQSTATEN_CC | IRQSTATEN_TC | IRQSTATEN_CINT | IRQSTATEN_CTOE |
-		      IRQSTATEN_CCE | IRQSTATEN_CEBE | IRQSTATEN_CIE |
-		      IRQSTATEN_DTOE | IRQSTATEN_DCE | IRQSTATEN_DEBE |
-		      IRQSTATEN_DINT);
+		      SDHCI_INT_CMD_COMPLETE | SDHCI_INT_XFER_COMPLETE |
+		      SDHCI_INT_CARD_INT | SDHCI_INT_TIMEOUT | SDHCI_INT_CRC |
+		      SDHCI_INT_END_BIT | SDHCI_INT_INDEX | SDHCI_INT_DATA_TIMEOUT |
+		      SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_END_BIT | SDHCI_INT_DMA);
 
 	wml = FIELD_PREP(WML_WR_BRST_LEN, 16)         |
 	      FIELD_PREP(WML_WR_WML_MASK, SECTOR_WML) |
